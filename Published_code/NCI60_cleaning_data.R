@@ -36,6 +36,7 @@ library(limma)
 library(stringr)
 
 homedir="C:/Users/HOMEDIRECTORY/"
+dir.create(paste(homedir,"Cleaned_data/", sep=""))
 setwd(paste(homedir, "Raw_data/", sep=""))
 getGEOSuppFiles("GSE32474")
 setwd("GSE32474/")

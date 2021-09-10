@@ -19,6 +19,8 @@
 
 ##Data I/O
 homedir="C:/Users/HOMEDIRECTORY/"
+dir.create(paste(homedir,"Random_signatures/", sep=""))
+dir.create(paste(homedir,"Random_signatures/NCI60/", sep=""))
 outdir=paste(homedir,"Random_signatures/NCI60/",sep="")
 raw_data=read.table(paste(homedir,"Cleaned_data/NCI60_full_gene_averaged.txt", sep=""))
 

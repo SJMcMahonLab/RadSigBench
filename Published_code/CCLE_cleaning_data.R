@@ -38,6 +38,7 @@ homedir="C:/Users/HOMEDIRECTORY/"
 
 x=fread(paste(homedir,"Raw_data/CCLE_Expression_2012-09-29.res", sep=""), fill=T)
 datayard=read.table(paste(homedir,"Raw_data/Supplementary_Data_1_Yard_et_al.csv", sep=""), sep=",", header=T, check.names=F)
+dir.create(paste(homedir,"Cleaned_data/", sep=""))
 
 ##Cleaning
 

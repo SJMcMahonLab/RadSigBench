@@ -21,6 +21,8 @@
 
 ##Data I/O
 homedir="C:/Users/HOMEDIRECTORY/"
+dir.create(paste(homedir,"Random_signatures/", sep=""))
+dir.create(paste(homedir,"Random_signatures/CCLE/", sep=""))
 outdir=paste(homedir,"Random_signatures/CCLE/",sep="")
 raw_data=read.table(paste(homedir,"Cleaned_data/CCLE_Expression_2012-09-29_gene_averaged",sep=""))
 

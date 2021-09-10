@@ -30,6 +30,8 @@ library(TOSTER)
 homedir="C:/Users/HOMEDIRECTORY/"
 Eschdata=read.table(paste(homedir,"Cleaned_data/Eschdata_NCI60.txt", sep=""))
 Halldata=read.table(paste(homedir,"Cleaned_data/Halldata_NCI60.txt", sep=""))
+dir.create(paste(homedir,"Fitted_models_NCI60/", sep=""))
+dir.create(paste(homedir,"Equivalence_test_results/", sep=""))
 modoutdir=paste(homedir,"Fitted_models_NCI60/", sep="")
 sigdir=paste(homedir,"Signatures/",sep="")
 genedatadir=paste(homedir,"Cleaned_data/NCI60_full_gene_averaged.txt", sep="")
