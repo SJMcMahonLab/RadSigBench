@@ -1,0 +1,642 @@
+## ---------------------------
+## Script name: RS_prediction_CCLE_V1.R
+## Purpose of script: To test published signatures and compare to random 
+## Author: Dr. John O'Connor
+## Date Created: 19-08-2021
+## Email: john.oconnor@qub.ac.uk
+## ---------------------------
+## Notes: 
+## This script requires the cleaned data from the cleaning_CCLE_data.R script
+## and random signatures from Random_siganture_testing_V1_CCLE.R
+## ---------------------------
+
+#Load Packages
+
+```{r}
+library(pls)
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(Rfast)
+library(caret)
+library(infotheo)
+library(e1071)
+library(ggrepel)
+library(ggpubr)
+library(TOSTER)
+```
+
+#Data I/O
+```{r}
+homedir="C:/Users/HOMEDIRECTORY/"
+Eschdata=read.table(paste(homedir,"Cleaned_data/Eschdata_CCLE.txt", sep=""))
+Halldata=read.table(paste(homedir,"Cleaned_data/Halldata_CCLE.txt", sep=""))
+modoutdir=paste(homedir,"Fitted_models_CCLE/", sep="")
+sigdir=paste(homedir,"Signatures/",sep="")
+genedatadir=paste(homedir,"Cleaned_data/CCLE_Expression_2012-09-29_gene_averaged", sep="")
+
+#Setting parameters
+
+#This will determine splitting of testing/training throughout
+set.seed(1001)
+dt=sample(nrow(Eschdata),nrow(Eschdata))
+
+#Variance threshold for PCR regression 
+varthres=80
+```
+
+#Functions
+```{r}
+c.fun<-function(df,center, scale) {
+  return((df/scale)-center)
+}
+
+pca.fun<-function(train,test, varthres, sigsize, modprefix, modoutdir) {
+  
+  #Fit PCA
+  pca_model=prcomp(train[,1:sigsize],scale =TRUE)
+  #save(pca_model, file=paste(modoutdir,modprefix,"_PCA",".Rdata", sep=""))
+  
+  #Calculate cumulative variance explained by components
+  pca.var=pca_model$sdev^2
+  pervar=cumsum(round(pca.var/sum(pca.var)*100,1))
+  
+  #Find number of components to get closest to 80% explained
+  if ((varthres-pervar[sum(pervar<varthres)])<((pervar[sum(pervar<varthres)+1])-varthres)){
+    pccut=sum(pervar<varthres)} else {pccut=sum(pervar<varthres)+1}
+  
+  scores=data.frame(pca_model$x)
+  scores$aucp=train$aucp
+
+  #Fit linear regression with PCs as explanatory and AUC as response
+  mod1=lm(as.formula(paste("aucp", "~",paste(colnames(scores)[c(1:pccut)], collapse = "+"),sep = "")),data = scores)
+  #save(mod1, file=paste(modoutdir,modprefix,"_PCR",".Rdata", sep=""))
+  
+  #Rotate, scale and centre test data
+  newscores=data.frame(scale(test[,1:sigsize], pca_model$center, pca_model$scale) %*% pca_model$rotation)
+  
+  #Use PCA model for prediction and calculate accuracy
+  pca_pred <- predict(mod1, newscores, ncomp = pccut)
+  output=list(pca_pred, abs(test$aucp-as.numeric(pca_pred)),test$aucp-as.numeric(pca_pred))
+  
+  return(output)
+}
+```
+
+#Eschrich/RSI model testing
+```{r}
+#Convert to ranking of 10 genes
+a=as.matrix(Eschdata[,1:10])
+EschRank=data.frame(rowRanks(a))
+EschRank$aucp=Eschdata$aucp
+EschRank$site=Eschdata$site
+colnames(EschRank)=colnames(Eschdata)
+rownames(EschRank)=rownames(Eschdata)
+
+sigsize_Esch=10
+fold1=EschRank[dt[1:174],]
+fold2=EschRank[dt[175:349],]
+fold3=EschRank[dt[350:523],]
+
+##Cross Validation 
+#CV1
+test=fold3
+train=rbind(fold1, fold2)
+
+#Fit linear model to rankings with no intercept(to match published model)
+mod1 <- train(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:sigsize_Esch)], collapse = "+"),sep = "")), train,method = "lm"
+              ,tuneGrid  = expand.grid(intercept = FALSE))
+
+#Prediction
+pred1=predict(mod1, test)
+#Error
+f1_ae=abs(test$aucp-as.numeric(pred1))
+#save(mod1, file=paste(modoutdir,"ESCH_CCLE_mod1.Rdata", sep=""))
+
+#CV2
+test=fold2
+train=rbind(fold1, fold3)
+
+mod1 <- train(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:sigsize_Esch)], collapse = "+"),sep = "")), train,method = "lm"
+              ,tuneGrid  = expand.grid(intercept = FALSE))
+
+pred2=predict(mod1, test)
+f2_ae=abs(test$aucp-as.numeric(pred2))
+#save(mod1, file=paste(modoutdir,"ESCH_CCLE_mod2.Rdata", sep=""))
+
+#CV3
+test=fold1
+train=rbind(fold2, fold3)
+
+mod1 <- train(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:sigsize_Esch)], collapse = "+"),sep = "")), train,method = "lm"
+              ,tuneGrid  = expand.grid(intercept = FALSE))
+
+pred3=predict(mod1, test)
+f3_ae=abs(test$aucp-as.numeric(pred3))
+#save(mod1, file=paste(modoutdir,"ESCH_CCLE_mod3.Rdata", sep=""))
+
+esch_ae=rbind(as.matrix(f1_ae),as.matrix(f2_ae),as.matrix(f3_ae))
+esch_pred=rbind(as.matrix(pred1),as.matrix(pred2),as.matrix(pred3))
+```
+
+##Hall testing 
+```{r}
+sigsize=97
+
+fold1=Halldata[dt[1:174],]
+fold2=Halldata[dt[175:349],]
+fold3=Halldata[dt[350:523],]
+
+#CV1
+test=fold3
+train=rbind(fold1, fold2)
+
+f1=pca.fun(train,test,varthres,sigsize, "HALL_HNSCC_CCLE_mod1", modoutdir)
+
+#CV2
+test=fold2
+train=rbind(fold1, fold3)
+
+f2=pca.fun(train,test,varthres,sigsize, "HALL_HNSCC_CCLE_mod2", modoutdir)
+
+#CV3
+test=fold1
+train=rbind(fold2, fold3)
+
+f3=pca.fun(train,test,varthres,sigsize,"HALL_HNSCC_CCLE_mod3", modoutdir)
+
+hall_pred=rbind(as.matrix(f1[[1]]),as.matrix(f2[[1]]),as.matrix(f3[[1]]))
+hall_ae=rbind(as.matrix(f1[[2]]),as.matrix(f2[[2]]),as.matrix(f3[[2]]))
+
+pdata1=rbind(fold3[,98:99],fold2[,98:99],fold1[,98:99])
+pdata1$esch_ae=esch_ae
+pdata1$hall_ae=hall_ae
+
+preddata=rbind(fold3[,98:99],fold2[,98:99],fold1[,98:99])
+preddata$esch_pred=esch_pred
+preddata$hall_pred=hall_pred
+```
+
+##Gene-Centric models 
+```{r}
+raw_datag=read.table(genedatadir)
+
+genedirs=c(paste(sigdir,"Genes_Zhang.txt", sep=""),
+           paste(sigdir,"Genes_Kim.txt", sep=""),
+           paste(sigdir,"Genes_Amund_basal_do.txt", sep=""),
+           paste(sigdir,"Genes_Amund_basal_SF2.txt",sep=""),
+           paste(sigdir,"Genes_Tewari.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_Apop.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_Autophagy.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_cell_cycle_checkpoints.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_cell_cycle_chromosome_maintenance.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_cell_cycle_mitotic.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_DNA_repair.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_DNA_replication.txt", sep=""),
+           paste(sigdir,"Genes_Reactome_Translation.txt", sep=""),
+           paste(sigdir,"Genes_Venet.txt", sep=""))
+
+modelnames=c("Eschrich", "Hall_HNSCC", "Zhang", "Kim", "Amund_D0", "Amund_SF2", "Tewari","R_Apop", "R_Auto", "R_Check", "R_Chrom", "R_Mitosis", "R_DNArepair", "R_DNAreplic", "R_Trans", "PCNAsig", "Intercept")
+
+#Fill with Eschrich and Hall sizes now, in loop later
+allsigsizes=c(10,97)
+
+```
+
+##Zhang model
+```{r}
+#Zhang model needs to use SVM and PLS
+
+#Read Zhang gene data
+x=read.table(genedirs[1],sep = "\n")
+
+#Read gene names excluding AUC and site (final 2 cols)
+genenames=colnames(raw_datag)[1:(ncol(raw_datag)-2)]
+
+#Match genes from Zhang to microarray data
+m1=match(x[,], genenames)
+
+#Count unmatched
+sum(is.na(m1))
+#List unmatched
+x[which(is.na(m1)),1]
+#Get matched
+m2=m1[!is.na(m1)]
+
+#Pull out matched gene data
+reddata=cbind(raw_datag[,m2], raw_datag[,which(colnames(raw_datag)=="aucp"|colnames(raw_datag)=="site")])
+
+#Add sig size to matrix
+allsigsizes[3]=length(m2)
+
+##Cross validation
+fold1=reddata[dt[1:174],]
+fold2=reddata[dt[175:349],]
+fold3=reddata[dt[350:523],]
+
+#CV1
+test=fold3
+train=rbind(fold1, fold2)
+
+#Fit pls model on training data
+pls_model=plsr(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:129)], collapse = "+"),sep = "")),data = train,scale =TRUE, validation = "CV")
+pls_scores=data.frame(pls_model$scores[,1:17])
+pls_scores$aucp=train$aucp
+
+#save(pls_model, file=paste(modoutdir,"ZHANG_CCLE_PLS_mod1.Rdata", sep=""))
+
+form1=as.formula(paste("aucp", "~",paste(colnames(pls_scores[,1:17]), collapse = "+"),sep = ""))
+
+obj <- tune(svm, form1, data = pls_scores,
+            ranges = list(gamma = 2^(-1:1), cost = 2^(-1:5)))
+
+mod_svm=obj$best.model
+#save(mod_svm, file=paste(modoutdir,"ZHANG_CCLE_SVM_mod1.Rdata", sep=""))
+
+#Get pls scores from test data and use SVM model to predict
+#Center and scale test data
+
+scaledtest=apply(test[,1:129], MARGIN=1, FUN=c.fun, pls_model$Xmeans, pls_model$scale)
+newpcs=t(scaledtest) %*% pls_model$projection
+newpcst=data.frame((newpcs)[,1:17])
+pred1=predict(mod_svm, newpcst)
+f1=abs(test$aucp-as.numeric(pred1))
+
+#CV2
+test=fold2
+train=rbind(fold1, fold3)
+
+#Fit pls model on training data
+pls_model=plsr(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:129)], collapse = "+"),sep = "")),data = train,scale =TRUE, validation = "CV")
+#save(pls_model, file=paste(modoutdir,"ZHANG_CCLE_PLS_mod2.Rdata", sep=""))
+
+#17 components to match Zhang et al (see their supplemental data)
+pls_scores=data.frame(pls_model$scores[,1:17])
+pls_scores$aucp=train$aucp
+
+obj <- tune(svm, form1, data = pls_scores,
+            ranges = list(gamma = 2^(-1:1), cost = 2^(-1:5)))
+mod_svm=obj$best.model
+
+#save(mod_svm, file=paste(modoutdir,"ZHANG_CCLE_SVM_mod2.Rdata", sep=""))
+
+#Get pls scores from test data and use SVM model to predict
+#Center and scale test data
+
+scaledtest=apply(test[,1:129], MARGIN=1, FUN=c.fun, pls_model$Xmeans, pls_model$scale)
+newpcs=t(scaledtest) %*% pls_model$projection
+newpcst=data.frame((newpcs)[,1:17])
+pred2=predict(mod_svm, newpcst)
+f2=abs(test$aucp-as.numeric(pred2))
+
+##CV3
+test=fold1
+train=rbind(fold2, fold3)
+
+#Fit pls model on training data
+pls_model=plsr(as.formula(paste("aucp", "~",paste(colnames(train)[c(1:129)], collapse = "+"),sep = "")),data = train,scale =TRUE, validation = "CV")
+#save(pls_model, file=paste(modoutdir,"ZHANG_CCLE_PLS_mod3.Rdata", sep=""))
+pls_scores=data.frame(pls_model$scores[,1:17])
+pls_scores$aucp=train$aucp
+
+obj <- tune(svm, form1, data = pls_scores,
+            ranges = list(gamma = 2^(-1:1), cost = 2^(-1:5)))
+
+mod_svm=obj$best.model
+#save(mod_svm, file=paste(modoutdir,"ZHANG_CCLE_SVM_mod3.Rdata", sep=""))
+
+#Get pls scores from test data and use SVM model to predict
+#Center and scale test data
+
+scaledtest=apply(test[,1:129], MARGIN=1, FUN=c.fun, pls_model$Xmeans, pls_model$scale)
+newpcs=t(scaledtest) %*% pls_model$projection
+newpcst=data.frame((newpcs)[,1:17])
+pred3=predict(mod_svm, newpcst)
+f3=abs(test$aucp-as.numeric(pred3))
+
+zhang_pred=rbind(as.matrix(pred1),as.matrix(pred2),as.matrix(pred3))
+zhang_ae=rbind(as.matrix(f1),as.matrix(f2),as.matrix(f3))
+
+pdata1[,dim(pdata1)[2]+1]=zhang_ae
+colnames(pdata1)[dim(pdata1)[2]]=paste(modelnames[3],"_ae",sep = "")
+
+preddata[,dim(preddata)[2]+1]=zhang_pred
+colnames(preddata)[dim(preddata)[2]]=paste(modelnames[3],"_pred",sep = "")
+```
+
+#Models using PCA approach 
+
+```{r}
+
+for (i in 2:length(genedirs)) {
+  
+  x=read.table(genedirs[i],sep = "\n")
+  
+  genenames=colnames(raw_datag)[1:(ncol(raw_datag)-2)]
+
+  m1=match(x[,], genenames)
+  
+  sum(is.na(m1))
+  x[which(is.na(m1)),1]
+  m2=m1[!is.na(m1)]
+  
+  reddata=cbind(raw_datag[,m2], raw_datag[,which(colnames(raw_datag)=="aucp"|colnames(raw_datag)=="site")])
+  
+  fold1=reddata[dt[1:174],]
+  fold2=reddata[dt[175:349],]
+  fold3=reddata[dt[350:523],]
+  
+  sigsize=length(m2)
+  allsigsizes[i+2]=sigsize
+  
+  ##CV1
+  test=fold3
+  train=rbind(fold1, fold2)
+  
+  label=paste(modelnames[i+2],"_CCLE_mod1", sep="")
+  f1=pca.fun(train,test,varthres,sigsize,label, modoutdir)
+  
+  ##CV2
+  test=fold2
+  train=rbind(fold1, fold3)
+  
+  label=paste(modelnames[i+2],"_CCLE_mod2", sep="")
+  f2=pca.fun(train,test,varthres,sigsize,label, modoutdir)
+  
+  ##CV3
+  test=fold1
+  train=rbind(fold2, fold3)
+
+  label=paste(modelnames[i+2],"_CCLE_mod3", sep="")
+  f3=pca.fun(train,test,varthres,sigsize,label, modoutdir)
+  
+  sig_pred=rbind(as.matrix(f1[[1]]),as.matrix(f2[[1]]),as.matrix(f3[[1]]))
+  sig_ae=rbind(as.matrix(f1[[2]]),as.matrix(f2[[2]]),as.matrix(f3[[2]]))
+  
+  pdata1[,dim(pdata1)[2]+1]=sig_ae
+  preddata[,dim(preddata)[2]+1]=sig_pred
+  
+  colnames(pdata1)[dim(pdata1)[2]]=paste(modelnames[i+2],"_ae",sep = "")
+  colnames(preddata)[dim(preddata)[2]]=paste(modelnames[i+2],"_pred",sep = "")
+  
+}
+```
+
+##Model with intercept only
+```{r}
+##CV1
+test=fold3
+train=rbind(fold1, fold2)
+
+mod=lm(aucp~1, data=train)
+#save(mod, file=paste(modoutdir,"Intercept_CCLE_mod1.Rdata", sep=""))
+pred1=predict(mod, test)
+f1_ae=abs(test$aucp-as.numeric(pred1))
+
+##CV2
+test=fold2
+train=rbind(fold1, fold3)
+
+mod=lm(aucp~1, data=train)
+#save(mod, file=paste(modoutdir,"Intercept_CCLE_mod2.Rdata", sep=""))
+pred2=predict(mod, test)
+f2_ae=abs(test$aucp-as.numeric(pred2))
+
+##CV3
+test=fold1
+train=rbind(fold2, fold3)
+
+mod=lm(aucp~1, data=train)
+#save(mod, file=paste(modoutdir,"Intercept_CCLE_mod3.Rdata", sep=""))
+pred3=predict(mod, test)
+f3_ae=abs(test$aucp-as.numeric(pred3))
+
+intercept_ae=rbind(as.matrix(f1_ae),as.matrix(f2_ae),as.matrix(f3_ae))
+intercept_pred=rbind(as.matrix(pred1),as.matrix(pred2),as.matrix(pred3))
+
+pdata1[,dim(pdata1)[2]+1]=intercept_ae
+colnames(pdata1)[dim(pdata1)[2]]=paste("Intercept","_ae",sep = "")
+
+preddata[,dim(preddata)[2]+1]=intercept_pred
+colnames(preddata)[dim(preddata)[2]]=paste("Intercept","_pred",sep = "")
+```
+
+#Plotting results
+```{r}
+#Sites to factor variable
+x=summary(factor(pdata1$site))
+#Sites with more than 5 samples
+x1=x[x>5]
+tissues_acc=subset(pdata1[,1:9], pdata1$site %in% names(x1))
+
+#Reshaping and renaming variables
+pdata2=reshape::melt(data = tissues_acc, id.vars = c("site"), measure.vars = colnames(pdata1)[seq(3,9)])
+
+pdata2$site[pdata2$site == 'central_nervous_system'] <- 'CNS (n=37)'
+pdata2$site[pdata2$site == 'breast'] <- 'Breast (n=28)'
+pdata2$site[pdata2$site == 'endometrium'] <- 'Endometrium (n=23)'
+pdata2$site[pdata2$site == 'large_intestine'] <- 'L. Intestine (n=43)'
+pdata2$site[pdata2$site == 'lung'] <- 'Lung (n=102)'
+pdata2$site[pdata2$site == 'liver'] <- 'Liver (n=20)'
+pdata2$site[pdata2$site == 'oesophagus'] <- 'Oesophagus (n=22)'
+pdata2$site[pdata2$site == 'ovary'] <- 'Ovary (n=39)'
+pdata2$site[pdata2$site == 'pancreas'] <- 'Pancreas (n=31)'
+pdata2$site[pdata2$site == 'skin'] <- 'Skin (n=36)'
+pdata2$site[pdata2$site == 'kidney'] <- 'Kidney (n=16)'
+pdata2$site[pdata2$site == 'bone'] <- 'Bone (n=13)'
+pdata2$site[pdata2$site == 'soft_tissue'] <- 'Soft Tissue (n=15)'
+pdata2$site[pdata2$site == 'stomach'] <- 'Stomach (n=19)'
+pdata2$site[pdata2$site == 'upper_aerodigestive_tract'] <- 'UADT (n=24)'
+pdata2$site[pdata2$site == 'urinary_tract'] <- 'Urinary Tract (n=19)'
+pdata2$site[pdata2$site == 'biliary_tract'] <- 'Biliary Tract (n=6)'
+pdata2$site[pdata2$site == 'autonomic_ganglia'] <- 'Auto. Ganglia (n=8)'
+pdata2$site[pdata2$site == 'pleura'] <- 'Pleura (n=7)'
+pdata2$site[pdata2$site == 'thyroid'] <- 'Thyroid (n=9)'
+
+#Model initials for plots
+mshort=c("E", "H", "Z", "K", "AD", "AS", "T")
+
+##Tissue_specific plot
+
+ggplot(pdata2, aes(x=variable, y=abs(value), colour=variable))+ facet_wrap(~site)+
+  geom_boxplot()+ labs(title="",x="",y=expression("MAE in prediction of MID (Gy)"), color = "Model")+
+  scale_color_discrete(labels = modelnames)+scale_x_discrete(labels= mshort)+
+  theme(axis.text.x = element_text(size=6),axis.text.y = element_text(size=12),axis.title=element_text(size=14))+theme_bw()
+
+```
+
+#Tissue level means
+```{r}
+##Mean over tissue values
+ag1=aggregate(pdata1[, c(1,3:9)], list(pdata1$site), mean)
+ag2=aggregate(pdata1[, 3:9], list(pdata1$site), sd)
+ag1$n=x
+
+##Histogram for MID
+
+pdata3=pdata1
+
+pdata3$site[pdata3$site == 'central_nervous_system'] <- 'CNS (n=37)'
+pdata3$site[pdata3$site == 'breast'] <- 'Breast (n=28)'
+pdata3$site[pdata3$site == 'endometrium'] <- 'Endometrium (n=23)'
+pdata3$site[pdata3$site == 'large_intestine'] <- 'L. Intestine (n=43)'
+pdata3$site[pdata3$site == 'lung'] <- 'Lung (n=102)'
+pdata3$site[pdata3$site == 'liver'] <- 'Liver (n=20)'
+pdata3$site[pdata3$site == 'oesophagus'] <- 'Oesophagus (n=22)'
+pdata3$site[pdata3$site == 'ovary'] <- 'Ovary (n=39)'
+pdata3$site[pdata3$site == 'pancreas'] <- 'Pancreas (n=31)'
+pdata3$site[pdata3$site == 'skin'] <- 'Skin (n=36)'
+pdata3$site[pdata3$site == 'kidney'] <- 'Kidney (n=16)'
+pdata3$site[pdata3$site == 'bone'] <- 'Bone (n=13)'
+pdata3$site[pdata3$site == 'soft_tissue'] <- 'Soft Tissue (n=15)'
+pdata3$site[pdata3$site == 'stomach'] <- 'Stomach (n=19)'
+pdata3$site[pdata3$site == 'upper_aerodigestive_tract'] <- 'UADT (n=24)'
+pdata3$site[pdata3$site == 'urinary_tract'] <- 'Urinary Tract (n=19)'
+pdata3$site[pdata3$site == 'biliary_tract'] <- 'Biliary Tract (n=6)'
+pdata3$site[pdata3$site == 'autonomic_ganglia'] <- 'Auto. Ganglia (n=8)'
+pdata3$site[pdata3$site == 'pleura'] <- 'Pleura (n=7)'
+pdata3$site[pdata3$site == 'thyroid'] <- 'Thyroid (n=9)'
+pdata3$site[pdata3$site == 'prostate'] <- 'Prostate (n=4)'
+pdata3$site[pdata3$site == 'salivary_gland'] <- 'Salivary Gland (n=2)'
+
+ggplot(pdata3, aes(x =aucp , y = reorder(site,aucp, FUN = median))) + geom_boxplot()+theme_bw()+
+  theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12),axis.title=element_text(size=14))+
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +geom_vline(xintercept=median(pdata3$aucp), linetype="dashed", color = "red")+
+  xlab("MID (Gy)")+ylab("Site")
+
+```
+
+#Plotting random signatures and models
+```{r}
+#Read median accuracy signatures absolute error
+randsigs_ae=read.table(paste(homedir, "Random_signatures/CCLE/medsigsae.txt", sep=""))
+sizes=c(10,19,31,49,97,114,127,129,131,146,168,182,272,289,306,546)
+
+randsigs=data.frame(sizes)
+randsigs$gmean=apply(randsigs_ae, 2, mean, na.rm = T)
+randsigs$gsd=apply(randsigs_ae, 2, sd, na.rm = T)
+randsigs$gdwn=randsigs$gmean-1.96*(randsigs$gsd/sqrt(dim(randsigs_ae)[1]))
+randsigs$gup=randsigs$gmean+1.96*(randsigs$gsd/sqrt(dim(randsigs_ae)[1]))
+
+pubsigs=data.frame(modelnames[1:length(modelnames)-1])
+colnames(pubsigs)[1]="modelnames"
+pubsigs$mean=apply(pdata1[,3:(length(pdata1)-1)], 2, mean, na.rm = T)
+pubsigs$sd=apply(pdata1[,3:(length(pdata1)-1)], 2, sd, na.rm = T)
+pubsigs$size=allsigsizes
+
+ribbonsizes=randsigs$sizes
+ribbonsizes[1]=ribbonsizes[1]-2
+ribbonsizes[16]=ribbonsizes[16]+2
+
+ggplot(pubsigs[1:7,])+geom_point(data=randsigs,aes(sizes,gmean), colour="red")+geom_line(data=randsigs,aes(sizes,gmean), colour="red")+geom_ribbon(data=randsigs,aes(x=ribbonsizes,y=gmean,ymin=gdwn, ymax=gup), alpha=0.1)+geom_text_repel(data=pubsigs,size=3,aes(x = size, y = mean, label = modelnames))+geom_point(data=pubsigs[1:7,],aes(size,mean), colour="black")+geom_point(data=pubsigs[8:16,],aes(size,mean), shape=1)+ylab("MAE in prediction of MID (Gy)")+xlab("Signature Size")+
+  geom_hline(yintercept=mean(pdata1$Intercept_ae), linetype="dashed", color = "blue")+
+  annotate(geom="text", x=300, y=0.905, label="Intercept only",color="blue")+
+  annotate(geom="text", x=450, y=0.87, label="Median random signature",color="red")+
+  scale_x_continuous(expand = c(0.026, 0))+theme_bw()+
+  theme(axis.text.x = element_text(size=12),axis.text.y = element_text(size=12),axis.title=element_text(size=14))+
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+
+```
+
+#Tissue distance from overall mean and variation versus error
+```{r}
+#tissue mean, distance from overall mean
+ag3=aggregate(pdata1[, 1], list(pdata1$site), mean)
+ag3$x=ag3$x-mean(pdata1$aucp)
+
+ax=cbind(ag1[,3:9], abs(ag3$x))
+d <- melt(ax, id.vars="abs(ag3$x)")
+
+colnames(d)[1]="aucp"
+levels(d$variable)[levels(d$variable) == 'esch_ae'] <- "Eschrich"
+levels(d$variable)[levels(d$variable) == 'hall_ae'] <- "Hall"
+levels(d$variable)[levels(d$variable) == 'Zhang_ae'] <- "Zhang"
+levels(d$variable)[levels(d$variable) == 'Kim_ae'] <- "Kim"
+levels(d$variable)[levels(d$variable) == 'Amund_D0_ae'] <- "Amund_D0"
+levels(d$variable)[levels(d$variable) == 'Amund_SF2_ae'] <- "Amund_SF2"
+levels(d$variable)[levels(d$variable) == 'Tewari_ae'] <- "Tewari"
+
+p1=ggplot(d, aes(aucp,value)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_grid(cols=vars(variable))+coord_fixed(ratio = 2)+xlab(expression("Absolute (tissue-level MID - overall MID)"))+
+  ylab("Mean absolute error (Gy)")+theme(plot.margin = margin(0.2, 0.2, -1.6, 0.2, "cm"))
+
+ag4=aggregate(pdata1[,1], list(pdata1$site), sd)
+ax2=cbind(ag1[,3:9], ag4$x)
+d2 <- melt(ax2, id.vars="ag4$x")
+
+colnames(d2)[1]="SD"
+levels(d2$variable)[levels(d2$variable) == 'esch_ae'] <- "Eschrich"
+levels(d2$variable)[levels(d2$variable) == 'hall_ae'] <- "Hall"
+levels(d2$variable)[levels(d2$variable) == 'Zhang_ae'] <- "Zhang"
+levels(d2$variable)[levels(d2$variable) == 'Kim_ae'] <- "Kim"
+levels(d2$variable)[levels(d2$variable) == 'Amund_D0_ae'] <- "Amund_D0"
+levels(d2$variable)[levels(d2$variable) == 'Amund_SF2_ae'] <- "Amund_SF2"
+levels(d2$variable)[levels(d2$variable) == 'Tewari_ae'] <- "Tewari"
+levels(d2$variable)[levels(d2$variable) == 'metapcna_ae'] <- "MetaPCNA"
+levels(d2$variable)[levels(d2$variable) == 'Intercept_ae'] <- "Intercept"
+
+p2=ggplot(d2, aes(SD,value)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_grid(cols=vars(variable))+coord_fixed(ratio = 2)+xlab(expression("Tissue-level MID standard deviation"))+
+  ylab("Mean absolute error (Gy)")+theme(plot.margin = margin(-1.6, 0.2, 0.2, 0.2, "cm"))
+
+px=ggarrange(p1,p2, ncol=1)
+
+```
+
+#Equivalence tests against random signatures
+```{r}
+bounds=c(-0.1, 0.1)
+randsigs2=randsigs_ae
+colnames(randsigs2)=c("r10","r19","r31","r49","r97","r114","r127","r129","r131","r146","r168","r182","r272","r289","r306","r546")
+dat1=cbind(pdata1, randsigs2)
+
+#Define pairs for comparison 
+pairs1=list(c(i1="esch_ae",i2="r10"), 
+           c(i1="hall_ae",i2="r97"), 
+           c(i1="Zhang_ae",i2="r97"), 
+           c(i1="Kim_ae",i2="r31"), 
+           c(i1="Amund_D0_ae",i2="r19"), 
+           c(i1="Amund_SF2_ae",i2="r168"), 
+           c(i1="Tewari_ae",i2="r49"), 
+           c(i1="R_Apop_ae",i2="r182"),
+           c(i1="R_Auto_ae",i2="r146"), 
+           c(i1="R_Check_ae",i2="r272"), 
+           c(i1="R_Chrom_ae",i2="r114"), 
+           c(i1="R_Mitosis_ae",i2="r546"), 
+           c(i1="R_DNArepair_ae",i2="r306"), 
+           c(i1="R_DNAreplic_ae",i2="r127"),
+           c(i1="R_Trans_ae",i2="r289"), 
+           c(i1="PCNAsig_ae",i2="r131"))
+
+#TOST
+x=dataTOSTpaired(data = dat1, pairs = pairs1, low_eqbound = -0.1,
+high_eqbound = 0.1, alpha = 0.003, desc = TRUE, plots = TRUE, eqbound_type='raw')
+x2=x$tost$asDF
+x3=x$eqb$asDF 
+x4=x$desc$asDF 
+x2$diff=x4$"m[1]"-x4$"m[2]"
+x2$cil=x3$"cil[raw]"
+x2$ciu=x3$"ciu[raw]"
+x2$i1=modelnames[1:16]
+  
+p10=ggplot(data=x2, aes(x=reorder(i1,diff), y=diff, colour=reorder(i1,diff)))+geom_point()+theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+geom_hline(yintercept=c(-0.1,0.1), linetype="dashed", color = "black")+geom_errorbar(aes(ymin=cil,ymax=ciu,color=i1,width=0.2))+ylab("MAE difference from random signature of same size")+
+  labs(color = "Signature")+annotate(geom="text", x=14, y=0.095, label="Upper bound",color="black")+annotate(geom="text", x=14, y=-0.095, label="Lower bound",color="black")
+
+#write.table(x2,file=paste(homedir,"Equivalence_test_results/CCLE_equivalence_tests.csv", sep=""), sep=",")
+
+```
+
