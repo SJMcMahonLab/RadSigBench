@@ -1,6 +1,6 @@
-# Radiosensitivity_signatures_review
+# RadSigBench
 
-Instructions for using code associated with “A Framework for Benchmarking Functional Genomics Signatures of Cancer Cell Radiosensitivity”
+Instructions for using code associated with “RadSigBench: A Framework for Benchmarking Functional Genomics Signatures of Cancer Cell Radiosensitivity”
 Authors: John O’Connor, Ian Overton, and Stephen McMahon
 
 ## 1.1	Summary 
